@@ -48,7 +48,7 @@ Printer is shutdown
 class Printer:
     config_error = configfile.error
     command_error = homing.CommandError
-    def __init__(self, input_fd, bglogger, start_args):
+    def __init__(self, input_fd, input_fd2, bglogger, start_args):
         self.bglogger = bglogger
         self.start_args = start_args
         self.reactor = reactor.Reactor()
@@ -57,7 +57,7 @@ class Printer:
         self.is_shutdown = False
         self.run_result = None
         self.event_handlers = {}
-        gc = gcode.GCodeParser(self, input_fd)
+        gc = gcode.GCodeParser(self, input_fd, input_fd2)
         self.objects = collections.OrderedDict({'gcode': gc})
     def get_start_args(self):
         return self.start_args
@@ -229,6 +229,9 @@ def main():
     opts.add_option("-I", "--input-tty", dest="inputtty",
                     default='/tmp/printer',
                     help="input tty name (default is /tmp/printer)")
+    opts.add_option("-J", "--input-tty-2", dest="inputtty2",
+                    default='/tmp/printer2',
+                    help="input tty name (default is /tmp/printer2)")
     opts.add_option("-l", "--logfile", dest="logfile",
                     help="write log to file instead of stderr")
     opts.add_option("-v", action="store_true", dest="verbose",
@@ -244,6 +247,7 @@ def main():
     start_args = {'config_file': args[0], 'start_reason': 'startup'}
 
     input_fd = bglogger = None
+    second_fd = None
 
     debuglevel = logging.INFO
     if options.verbose:
@@ -254,6 +258,7 @@ def main():
         input_fd = debuginput.fileno()
     else:
         input_fd = util.create_pty(options.inputtty)
+        second_fd = util.create_pty(options.inputtty2)
     if options.debugoutput:
         start_args['debugoutput'] = options.debugoutput
         start_args.update(options.dictionary)
@@ -279,7 +284,7 @@ def main():
         if bglogger is not None:
             bglogger.clear_rollover_info()
             bglogger.set_rollover_info('versions', versions)
-        printer = Printer(input_fd, bglogger, start_args)
+        printer = Printer(input_fd, second_fd, bglogger, start_args)
         res = printer.run()
         if res in ['exit', 'error_exit']:
             break

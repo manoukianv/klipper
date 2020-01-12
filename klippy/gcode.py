@@ -10,9 +10,10 @@ import homing
 class GCodeParser:
     error = homing.CommandError
     RETRY_TIME = 0.100
-    def __init__(self, printer, fd):
+    def __init__(self, printer, fd, fd2):
         self.printer = printer
         self.fd = fd
+        self.fd2 = fd2
         printer.register_event_handler("klippy:ready", self._handle_ready)
         printer.register_event_handler("klippy:shutdown", self._handle_shutdown)
         printer.register_event_handler("klippy:disconnect",
@@ -27,10 +28,14 @@ class GCodeParser:
         if not self.is_fileinput:
             self.fd_handle = self.reactor.register_fd(self.fd,
                                                       self._process_data)
+        self.fd_handle2 =  self.reactor.register_fd(self.fd2,
+                                                     self._process_data)
+
         self.partial_input = ""
         self.pending_commands = []
         self.bytes_read = 0
         self.input_log = collections.deque([], 50)
+        self.input_source = 0
         # Command handling
         self.is_printer_ready = False
         self.mutex = self.reactor.mutex()
@@ -176,6 +181,9 @@ class GCodeParser:
         if self.is_fileinput and self.fd_handle is None:
             self.fd_handle = self.reactor.register_fd(self.fd,
                                                       self._process_data)
+        if self.fd_handle2 is None:
+            self.fd_handle2 = self.reactor.register_fd(self.fd2,
+                                                        self._process_data)
         self._respond_state("Ready")
     def _handle_activate_extruder(self):
         self.reset_last_position()
@@ -239,10 +247,27 @@ class GCodeParser:
     m112_r = re.compile('^(?:[nN][0-9]+)?\s*[mM]112(?:\s|$)')
     def _process_data(self, eventtime):
         # Read input, separate by newline, and add to pending_commands
+        logging.info(eventtime)
+        logging.info(self)
         try:
-            data = os.read(self.fd, 4096)
+            if self.input_source==0 or self.input_source==1:
+                logging.info('Read gcode on console 1')
+                data = os.read(self.fd, 4096)
+                self.input_source = 1
         except os.error:
-            logging.exception("Read g-code")
+        #    logging.exception("Read g-code")
+            self.input_source = 0
+        # if the buffer on serial 1 is empty, read the serial 2
+        try:
+            if self.input_source==0 or self.input_source==2:
+                logging.info('Read gcode on console 2')
+                data = os.read(self.fd2, 4096)
+                self.input_source = 2
+        except os.error:
+        #    logging.exception("Read g-code 2")
+            self.input_source = 0
+        if data is None or len(data)==0:
+            logging.info('no data read')
             return
         self.input_log.append((eventtime, data))
         self.bytes_read += len(data)
@@ -251,6 +276,8 @@ class GCodeParser:
         self.partial_input = lines.pop()
         pending_commands = self.pending_commands
         pending_commands.extend(lines)
+        if self.partial_input is None or len(self.partial_input) == 0:
+            self.input_source = 0
         # Special handling for debug file input EOF
         if not data and self.is_fileinput:
             if not self.is_processing_data:
@@ -300,8 +327,10 @@ class GCodeParser:
         try:
             if msg:
                 os.write(self.fd, "ok %s\n" % (msg,))
+                os.write(self.fd2, "ok %s\n" % (msg,))
             else:
                 os.write(self.fd, "ok\n")
+                os.write(self.fd2, "ok\n")
         except os.error:
             logging.exception("Write g-code ack")
         self.need_ack = False
@@ -310,6 +339,7 @@ class GCodeParser:
             return
         try:
             os.write(self.fd, msg+"\n")
+            os.write(self.fd2, msg+"\n")
         except os.error:
             logging.exception("Write g-code response")
     def respond_info(self, msg, log=True):
